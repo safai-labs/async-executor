@@ -231,7 +231,11 @@ thread_local! {
 }
 
 thread_local! {
-     static UNTIL_SATISFIED: UnsafeCell<bool> = UnsafeCell::new(false) ;
+  static UNTIL_SATISFIED: UnsafeCell<bool> = UnsafeCell::new(false) ;
+}
+
+thread_local! {
+  static WHILE_FN: UnsafeCell<Option<Box<dyn FnMut() -> bool>>> = UnsafeCell::new(None) ;
 }
 
 thread_local! {
@@ -315,6 +319,16 @@ pub fn run(until: Option<Task>) {
     run_internal();
 }
 
+/// Run the executor
+///
+/// The function passed as `condition` will run on every loop of the executor. The executor will
+/// yield anytime the `condition` evaluates to `true`. You can restart execution by issuing another
+/// `run` command
+pub fn run_while(condition: Option<Box<dyn FnMut() -> bool>>) {
+    WHILE_FN.with(|cell| unsafe { *cell.get() = condition });
+    run_internal();
+}
+
 // Returns `true` if `until` task completed, or there was no `until` task and every task was
 // completed.
 //
@@ -354,6 +368,9 @@ fn run_internal() -> bool {
             return true;
         }
 
+        let should_continue =
+            WHILE_FN.with(|cell| unsafe { (&mut *cell.get()).as_mut().map_or(true, |f| (f)()) });
+
         let exit_requested = EXIT_LOOP.with(|cell| {
             let v = cell.get();
             let result = unsafe { *v };
@@ -364,7 +381,7 @@ fn run_internal() -> bool {
             result
         }) && YIELD.with(|cell| unsafe { *cell.get() });
 
-        if exit_requested {
+        if exit_requested || !should_continue {
             return false;
         }
 
@@ -724,6 +741,8 @@ fn set_counter(counter: usize) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicI8;
+
     use super::*;
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     use wasm_bindgen_test::*;
@@ -760,8 +779,36 @@ mod tests {
 
     #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
     #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    fn test_counts() {
+    fn test_while() {
         use tokio::sync::*;
+        let (_sender1, receiver1) = oneshot::channel::<()>();
+        let _handle1 = spawn(async move {
+            let _ = receiver1.await;
+        });
+        let (sender2, receiver2) = oneshot::channel::<()>();
+        let _handle2 = spawn(async move {
+            let _ = receiver2.await;
+        });
+        let _ = sender2.send(());
+
+        let i = Arc::new(AtomicI8::new(0));
+        let j = i.clone();
+
+        run_while(Some(Box::new(move || {
+            let last = j.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            last < 5
+        })));
+        let now = i.load(std::sync::atomic::Ordering::SeqCst);
+
+        assert_eq!(now, 6);
+
+        evict_all();
+    }
+
+    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
+    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
+    fn test_counts() {
+        use tokio::sync::oneshot;
         let (sender, mut receiver) = oneshot::channel();
         let (sender2, receiver2) = oneshot::channel::<()>();
         let handle1 = spawn(async move {
