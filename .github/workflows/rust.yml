@@ -2,13 +2,12 @@ name: Rust
 
 on:
   push:
-    branches: [ master ]
+    branches: [master]
   pull_request:
-    branches: [ master ]
+    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
-
 
 jobs:
   test:
@@ -20,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: ['1.49.0', '1.50.0', 'stable', 'nightly']
+        toolchain: ["stable", "nightly"]
 
     steps:
       - name: Checkout sources
@@ -47,7 +46,7 @@ jobs:
 
     strategy:
       matrix:
-        toolchain: ['stable']
+        toolchain: ["stable"]
 
     steps:
       - name: Checkout sources
@@ -56,7 +55,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@v2
         with:
-          node-version: '12'
+          node-version: "12"
 
       - name: Install ${{matrix.toolchain}} toolchain
         uses: actions-rs/toolchain@v1
@@ -66,32 +65,13 @@ jobs:
           toolchain: ${{matrix.toolchain}}
           override: true
 
-      - name: Install wasm-pack
-        uses: jetli/wasm-pack-action@v0.3.0
-        with:
-          version: 'latest'
-
       - name: Use wasmtime 0.23.0
         uses: mwilliamson/setup-wasmtime-action@v1
         with:
           wasmtime-version: "0.23.0"
 
-      - name: Install wasmer
-        run: |-
-          curl https://get.wasmer.io -sSfL | sh
-
-      - name: Check if it tests under Node.js
-        run: |-
-          wasm-pack test --node -- --all-features
-
       - name: Check if it tests under wasmtime
         run: |-
-          cargo test --target wasm32-wasi --all-features
-
-      - name: Check if it tests under wasmer
-        run: |-
-          source ~/.wasmer/wasmer.sh
-          cp .cargo/config.wasmer.toml .cargo/config.toml
           cargo test --target wasm32-wasi --all-features
 
   lints:
@@ -101,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        toolchain: ['stable']
+        toolchain: ["stable"]
 
     steps:
       - name: Checkout sources

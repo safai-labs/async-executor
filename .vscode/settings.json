@@ -1,0 +1,14 @@
+{
+  "rust-analyzer.cargo.target": "wasm32-unknown-unknown",
+  "rust-analyzer.cargo.features": [],
+  "rust-analyzer.rustfmt.overrideCommand": [
+    "rustup",
+    "run",
+    "nightly",
+    "--",
+    "rustfmt",
+    "--edition",
+    "2021",
+    "--"
+  ]
+}
