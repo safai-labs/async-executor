@@ -36,6 +36,7 @@ type Token = usize;
 
 #[cfg(feature = "debug")]
 #[derive(Clone, Debug)]
+#[allow(missing_docs)]
 pub struct TypeInfo {
     type_id: Option<TypeId>,
     type_name: &'static str,
@@ -75,6 +76,7 @@ impl TypeInfo {
 
 /// Task information
 #[derive(Clone)]
+#[must_use]
 pub struct Task {
     token: Token,
     #[cfg(feature = "debug")]
@@ -103,6 +105,7 @@ impl Ord for Task {
 
 impl Task {
     #[cfg(feature = "debug")]
+    #[allow(missing_docs)]
     pub fn type_info(&self) -> &TypeInfo {
         self.type_info.as_ref()
     }
@@ -146,7 +149,7 @@ impl<T> Future for TaskHandle<T> {
 
 impl ArcWake for Task {
     fn wake_by_ref(arc_self: &Arc<Self>) {
-        EXECUTOR.with(|cell| (unsafe { &mut *cell.get() }).enqueue(arc_self.clone()))
+        EXECUTOR.with(|cell| (unsafe { &mut *cell.get() }).enqueue(arc_self.clone()));
     }
 }
 
@@ -190,7 +193,7 @@ impl Executor {
         self.futures.insert(task.clone(), unsafe {
             Pin::new_unchecked(Box::new(async move {
                 let _ = sender.send(fut.await);
-            }) as Box<dyn Future<Output = ()>>)
+            }))
         });
         self.queue.push(Arc::new(task.clone()));
         TaskHandle { receiver, task }
@@ -223,11 +226,11 @@ impl Executor {
 }
 
 thread_local! {
-     static EXECUTOR: UnsafeCell<Executor> = UnsafeCell::new(Executor::new()) ;
+  static EXECUTOR: UnsafeCell<Executor> = UnsafeCell::new(Executor::new()) ;
 }
 
 thread_local! {
-     static UNTIL: UnsafeCell<Option<Task>> = UnsafeCell::new(None) ;
+  static UNTIL: UnsafeCell<Option<Task>> = UnsafeCell::new(None) ;
 }
 
 thread_local! {
@@ -239,11 +242,11 @@ thread_local! {
 }
 
 thread_local! {
-     static YIELD: UnsafeCell<bool> = UnsafeCell::new(true) ;
+  static YIELD: UnsafeCell<bool> = UnsafeCell::new(true) ;
 }
 
 thread_local! {
-     static EXIT_LOOP: UnsafeCell<bool> = UnsafeCell::new(false) ;
+  static EXIT_LOOP: UnsafeCell<bool> = UnsafeCell::new(false) ;
 }
 
 /// Spawn a task
@@ -257,35 +260,11 @@ where
 
 /// Run tasks until completion of a future
 ///
-/// If `cooperative` feature is enabled, given future should have `'static` lifetime.
-#[cfg(not(feature = "cooperative"))]
-pub fn block_on<F, R>(fut: F) -> R
-where
-    F: Future<Output = R>,
-{
-    // We know that this task is to complete by the end of this function,
-    // so let's pretend it is static
-    let mut handle = EXECUTOR.with(|cell| (unsafe { &mut *cell.get() }).spawn_non_static(fut));
-    run(Some(handle.task()));
-    loop {
-        match handle.receiver.try_recv() {
-            Ok(None) => {}
-            Ok(Some(v)) => return v,
-            Err(_) => unreachable!(), // the data was sent at this point
-        }
-    }
-}
-
-/// Run tasks until completion of a future
-///
 /// ## Important
 ///
-/// This function WILL NOT allow yielding to the environment that `cooperative` feature allows,
-/// and it will run the executor until the given future is ready. If yielding is expected,
-/// this will block forever.
+/// This function will yield to the environment if configured to do so.
 ///
-#[cfg(feature = "cooperative")]
-pub fn block_on<F, R>(fut: F) -> R
+pub fn run<F, R>(fut: F) -> R
 where
     F: Future<Output = R>,
 {
@@ -293,7 +272,7 @@ where
     YIELD.with(|cell| unsafe {
         *cell.get() = false;
     });
-    run(Some(handle.task()));
+    run_until(handle.task());
     YIELD.with(|cell| unsafe {
         *cell.get() = true;
     });
@@ -308,24 +287,44 @@ where
 
 /// Run the executor
 ///
+/// The `until` promise and `while` function will remain unchanged.
+pub fn start() {
+    run_internal();
+}
+
+/// Reset execution conditions
+///
+/// Unsets the until promise and the while fn as well as their resolution statuses.
+pub fn reset_yield_conditions() {
+    UNTIL.with(|cell| unsafe { *cell.get() = None });
+    UNTIL_SATISFIED.with(|cell| unsafe { *cell.get() = false });
+    WHILE_FN.with(|cell| unsafe { *cell.get() = None });
+}
+
+/// Run the executor until a promise resolves
+///
 /// If `until` is `None`, it will run until all tasks have been completed. Otherwise, it'll wait
 /// until passed task is complete, or unless a `cooperative` feature has been enabled and control
 /// has been yielded to the environment. In this case the function will return but the environment
 /// might schedule further execution of this executor in the background after termination of the
 /// function enclosing invocation of this [`run`]
-pub fn run(until: Option<Task>) {
-    UNTIL.with(|cell| unsafe { *cell.get() = until });
+pub fn run_until(until: Task) {
+    UNTIL.with(|cell| unsafe { *cell.get() = Some(until) });
     UNTIL_SATISFIED.with(|cell| unsafe { *cell.get() = false });
     run_internal();
 }
 
-/// Run the executor
+/// Run the executor while a function returns true
 ///
 /// The function passed as `condition` will run on every loop of the executor. The executor will
 /// yield anytime the `condition` evaluates to `true`. You can restart execution by issuing another
 /// `run` command
-pub fn run_while(condition: Option<Box<dyn FnMut() -> bool>>) {
-    WHILE_FN.with(|cell| unsafe { *cell.get() = condition });
+pub fn run_while<F>(condition: F)
+where
+    F: FnMut() -> bool + 'static,
+{
+    WHILE_FN.with(|cell| unsafe { *cell.get() = Some(Box::new(condition)) });
+
     run_internal();
 }
 
@@ -344,14 +343,12 @@ fn run_internal() -> bool {
 
         if let Some(task) = task {
             let future = (unsafe { &mut *cell.get() }).futures.get_mut(&task);
-            let ready = if let Some(future) = future {
+            let ready = future.map_or(false, |future| {
                 let waker = waker_ref(&task);
                 let context = &mut Context::from_waker(&*waker);
                 let ready = matches!(future.as_mut().poll(context), Poll::Ready(_));
                 ready
-            } else {
-                false
-            };
+            });
             if ready {
                 (unsafe { &mut *cell.get() }).futures.remove(&task);
 
@@ -396,301 +393,8 @@ fn run_internal() -> bool {
     })
 }
 
-#[cfg(all(
-    feature = "cooperative",
-    target_arch = "wasm32",
-    not(target_os = "wasi")
-))]
-mod cooperative {
-    use super::{run_internal, EXIT_LOOP};
-    use pin_project::pin_project;
-    use std::cell::UnsafeCell;
-    use std::future::Future;
-    use std::pin::Pin;
-    use std::sync::Arc;
-    use std::task::{Context, Poll};
-    use std::time::Duration;
-    use wasm_bindgen::prelude::*;
-
-    #[wasm_bindgen]
-    extern "C" {
-        #[wasm_bindgen(js_name = "setTimeout")]
-        fn set_timeout(_: JsValue, delay: u32);
-
-        #[cfg(feature = "requestIdleCallback")]
-        #[wasm_bindgen(js_name = "requestIdleCallback")]
-        fn request_idle_callback(_: JsValue, options: &JsValue);
-
-        #[cfg(feature = "cooperative-browser")]
-        #[wasm_bindgen(js_name = "requestAnimationFrame")]
-        fn request_animation_frame(_: JsValue);
-
-    }
-
-    #[pin_project]
-    struct TimeoutYield<F, O>
-    where
-        F: Future<Output = O> + 'static,
-    {
-        yielded: bool,
-        duration: Option<Duration>,
-        done: bool,
-        output: Option<O>,
-        #[pin]
-        future: F,
-        ready: Arc<UnsafeCell<bool>>,
-    }
-
-    impl<F, O> Future for TimeoutYield<F, O>
-    where
-        F: Future<Output = O> + 'static,
-    {
-        type Output = O;
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            if self.done {
-                return Poll::Pending;
-            }
-            if self.yielded && !unsafe { *self.ready.get() } {
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-            let should_yield = !self.yielded;
-            let this = self.project();
-            if *this.yielded && unsafe { *this.ready.get() } && this.output.is_some() {
-                // it's ok to unwrap here because we check `is_some` above
-                let output = this.output.take().unwrap();
-                *this.done = true;
-                return Poll::Ready(output);
-            }
-            match (should_yield, this.future.poll(cx)) {
-                (_, result @ Poll::Pending) | (true, result) => {
-                    *this.yielded = true;
-                    if cfg!(target_arch = "wasm32") {
-                        // If this timeout is not immediate,
-                        // return control to the executor at the earliest opportunity
-                        if let Some(duration) = this.duration {
-                            if duration.as_millis() > 0 {
-                                set_timeout(
-                                    Closure::once_into_js(move || {
-                                        run_internal();
-                                    }),
-                                    0,
-                                );
-                            }
-                        }
-
-                        if should_yield {
-                            let ready = this.ready.clone();
-
-                            set_timeout(
-                                Closure::once_into_js(move || {
-                                    unsafe { *ready.get() = true };
-                                    run_internal();
-                                }),
-                                this.duration
-                                    .unwrap_or(Duration::from_millis(0))
-                                    .as_millis() as u32,
-                            );
-                        }
-                        EXIT_LOOP.with(|cell| unsafe { *cell.get() = true });
-                    }
-                    if let Poll::Ready(output) = result {
-                        this.output.replace(output);
-                    }
-                    cx.waker().wake_by_ref();
-                    Poll::Pending
-                }
-                (false, Poll::Ready(output)) => {
-                    *this.done = true;
-                    Poll::Ready(output)
-                }
-            }
-        }
-    }
-
-    /// Yields the JavaScript environment using `setTimeout` function
-    ///
-    /// This future will be complete after `duration` has passed
-    ///
-    /// Only available under `cooperative` feature gate
-    ///
-    /// ## Caution
-    ///
-    /// Specifying a non-zero timeout duration will result in the executor not
-    /// being called for that duration or longer.
-    pub fn yield_timeout(duration: Duration) -> impl Future<Output = ()> {
-        TimeoutYield {
-            future: futures::future::ready(()),
-            duration: Some(duration),
-            output: None,
-            yielded: false,
-            done: false,
-            ready: Arc::new(UnsafeCell::new(false)),
-        }
-    }
-
-    /// Yields a future to the JavaScript environment using `setTimeout` function
-    ///
-    /// This future will be ready after yielding and when the enclosed future is ready.
-    ///
-    /// Only available under `cooperative` feature gate
-    pub fn yield_async<F, O>(future: F) -> impl Future<Output = O>
-    where
-        F: Future<Output = O> + 'static,
-    {
-        TimeoutYield {
-            future,
-            duration: None,
-            output: None,
-            yielded: false,
-            done: false,
-            ready: Arc::new(UnsafeCell::new(false)),
-        }
-    }
-
-    #[cfg(feature = "cooperative-browser")]
-    #[pin_project]
-    struct AnimationFrameYield {
-        yielded: bool,
-        done: bool,
-        output: Arc<UnsafeCell<Option<f64>>>,
-    }
-
-    #[cfg(feature = "cooperative-browser")]
-    impl Future for AnimationFrameYield {
-        type Output = f64;
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            if self.done {
-                return Poll::Pending;
-            }
-            let should_yield = !self.yielded;
-            let this = self.project();
-            if *this.yielded && unsafe { &*this.output.get() }.is_some() {
-                // it's ok to unwrap here because we check `is_some` above
-                let output = unsafe { &mut *this.output.get() }.take().unwrap();
-                *this.done = true;
-                return Poll::Ready(output);
-            }
-
-            if should_yield {
-                *this.yielded = true;
-                if cfg!(target_arch = "wasm32") {
-                    let output = this.output.clone();
-                    request_animation_frame(Closure::once_into_js(move |timestamp| {
-                        unsafe { &mut *output.get() }.replace(timestamp);
-                        run_internal();
-                    }));
-                    EXIT_LOOP.with(|cell| unsafe { *cell.get() = true });
-                }
-            }
-
-            cx.waker().wake_by_ref();
-
-            Poll::Pending
-        }
-    }
-
-    /// Yields to the browser using `requestAnimationFrame`
-    ///
-    /// This allows to yield to the browser until the next animation frame is requested to be
-    /// rendered.
-    ///
-    /// It will output high resolution timer as
-    /// [requestAnimationFrame](https://developer.mozilla.org/en-US/docs/Web/API/window/requestAnimationFrame)
-    ///
-    /// Only available under `cooperative-browser` feature gate
-    ///
-    #[cfg(feature = "cooperative-browser")]
-    pub fn yield_animation_frame() -> impl Future<Output = f64> {
-        AnimationFrameYield {
-            output: Arc::new(UnsafeCell::new(None)),
-            yielded: false,
-            done: false,
-        }
-    }
-
-    #[cfg(feature = "requestIdleCallback")]
-    #[pin_project]
-    struct UntilIdleYield {
-        timeout: Option<Duration>,
-        yielded: bool,
-        done: bool,
-        output: Arc<UnsafeCell<Option<web_sys::IdleDeadline>>>,
-    }
-
-    #[cfg(feature = "requestIdleCallback")]
-    impl Future for UntilIdleYield {
-        type Output = web_sys::IdleDeadline;
-        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-            if self.done {
-                return Poll::Pending;
-            }
-            let should_yield = !self.yielded;
-            let this = self.project();
-            if *this.yielded && unsafe { &*this.output.get() }.is_some() {
-                // it's ok to unwrap here because we check `is_some` above
-                let output = unsafe { &mut *this.output.get() }.take().unwrap();
-                *this.done = true;
-                return Poll::Ready(output);
-            }
-
-            if should_yield {
-                *this.yielded = true;
-                if cfg!(target_arch = "wasm32") {
-                    let map = js_sys::Map::new();
-                    if let Some(timeout) = this.timeout {
-                        map.set(&"timeout".into(), &(timeout.as_millis() as u32).into());
-                    }
-                    let options =
-                        js_sys::Object::from_entries(&map).unwrap_or(js_sys::Object::new());
-                    let output = this.output.clone();
-                    request_idle_callback(
-                        Closure::once_into_js(move |timestamp| {
-                            unsafe { &mut *output.get() }.replace(timestamp);
-                            run_internal();
-                        }),
-                        &options.into(),
-                    );
-                    EXIT_LOOP.with(|cell| unsafe { *cell.get() = true });
-                }
-            }
-
-            cx.waker().wake_by_ref();
-
-            Poll::Pending
-        }
-    }
-
-    /// Yields to the browser using `requestIdleCallback`
-    ///
-    /// This allows to yield to the browser until browser is delayed.
-    ///
-    /// It will output [`web_sys::IdleDeadline`] as per
-    /// [requestIdleCallback](https://developer.mozilla.org/en-US/docs/Web/API/Window/requestIdleCallback)
-    ///
-    /// Only available under `requestIdleCallback` feature gate
-    ///
-    #[cfg(feature = "requestIdleCallback")]
-    pub fn yield_until_idle(
-        timeout: Option<Duration>,
-    ) -> impl Future<Output = web_sys::IdleDeadline> {
-        UntilIdleYield {
-            timeout,
-            output: Arc::new(UnsafeCell::new(None)),
-            yielded: false,
-            done: false,
-        }
-    }
-}
-
-#[cfg(all(
-    feature = "cooperative",
-    target_arch = "wasm32",
-    not(target_os = "wasi")
-))]
-pub use cooperative::*;
-
 /// Returns the number of tasks currently registered with the executor
+#[must_use]
 pub fn tasks_count() -> usize {
     EXECUTOR.with(|cell| {
         let executor = unsafe { &mut *cell.get() };
@@ -699,28 +403,31 @@ pub fn tasks_count() -> usize {
 }
 
 /// Returns the number of tasks currently in the queue to execute
+#[must_use]
 pub fn queued_tasks_count() -> usize {
     EXECUTOR.with(|cell| (unsafe { &mut *cell.get() }).queue.len())
 }
 
 /// Returns all tasks that haven't completed yet
+#[must_use]
 pub fn tasks() -> Vec<Task> {
     EXECUTOR.with(|cell| {
         (unsafe { &*cell.get() })
             .futures
             .keys()
-            .map(|t| Task::clone(&t))
+            .map(Task::clone)
             .collect()
     })
 }
 
 /// Returns tokens for queued tasks
+#[must_use]
 pub fn queued_tasks() -> Vec<Task> {
     EXECUTOR.with(|cell| {
         (unsafe { &*cell.get() })
             .queue
             .iter()
-            .map(|t| Task::clone(&t))
+            .map(|t| Task::clone(t))
             .collect()
     })
 }
@@ -741,14 +448,13 @@ fn set_counter(counter: usize) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicI8;
 
     use super::*;
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-    use wasm_bindgen_test::*;
+    thread_local! {
+      static NUM: UnsafeCell<u32> = UnsafeCell::new(0) ;
+    }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
+    #[test]
     fn test() {
         use tokio::sync::*;
         let (sender, receiver) = oneshot::channel::<()>();
@@ -756,12 +462,12 @@ mod tests {
             let _ = receiver.await;
         });
         let _ = sender.send(());
-        run(None);
+        start();
+        reset_yield_conditions();
         evict_all();
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
+    #[test]
     fn test_until() {
         use tokio::sync::*;
         let (_sender1, receiver1) = oneshot::channel::<()>();
@@ -773,12 +479,12 @@ mod tests {
             let _ = receiver2.await;
         });
         let _ = sender2.send(());
-        run(Some(handle2.task()));
+        run_until(handle2.task());
+        reset_yield_conditions();
         evict_all();
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
+    #[test]
     fn test_while() {
         use tokio::sync::*;
         let (_sender1, receiver1) = oneshot::channel::<()>();
@@ -791,22 +497,23 @@ mod tests {
         });
         let _ = sender2.send(());
 
-        let i = Arc::new(AtomicI8::new(0));
-        let j = i.clone();
+        run_while(move || {
+            let num = NUM.with(|cell| unsafe {
+                *cell.get() += 1;
+                *cell.get()
+            });
+            num < 6
+        });
+        let num = NUM.with(|cell| unsafe { *cell.get() });
 
-        run_while(Some(Box::new(move || {
-            let last = j.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            last < 5
-        })));
-        let now = i.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(num, 6);
 
-        assert_eq!(now, 6);
+        reset_yield_conditions();
 
         evict_all();
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
+    #[test]
     fn test_counts() {
         use tokio::sync::oneshot;
         let (sender, mut receiver) = oneshot::channel();
@@ -817,9 +524,9 @@ mod tests {
         });
         let _handle2 = spawn(async move {
             let _ = sender2.send(());
-            futures::future::pending::<()>().await // this will never end
+            futures::future::pending::<()>().await; // this will never end
         });
-        run(Some(handle1.task()));
+        run_until(handle1.task());
         let (tasks_, queued_tasks_) = receiver.try_recv().unwrap();
         // handle1 + handle2
         assert_eq!(tasks_, 2);
@@ -829,11 +536,11 @@ mod tests {
         assert_eq!(tasks_count(), 1);
         // handle2 still has nothing new
         assert_eq!(queued_tasks_count(), 0);
+        reset_yield_conditions();
         evict_all();
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
+    #[test]
     fn evicted_tasks_dont_requeue() {
         use tokio::sync::*;
         let (_sender, receiver) = oneshot::channel::<()>();
@@ -846,11 +553,11 @@ mod tests {
         ArcWake::wake_by_ref(&Arc::new(handle.task()));
         assert_eq!(tasks_count(), 0);
         assert_eq!(queued_tasks_count(), 0);
+        reset_yield_conditions();
         evict_all();
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
+    #[test]
     fn token_exhaustion() {
         set_counter(usize::MAX);
         // this should be fine anyway
@@ -860,24 +567,24 @@ mod tests {
         // new token should be different and wrap back to the beginning
         assert!(handle.task().token != handle0.task().token);
         assert_eq!(handle.task().token, 0);
+        reset_yield_conditions();
         evict_all();
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
+    #[test]
     fn blocking_on() {
         use tokio::sync::*;
         let (sender, receiver) = oneshot::channel::<u8>();
         let _handle = spawn(async move {
             let _ = sender.send(1);
         });
-        let result = block_on(async move { receiver.await.unwrap() });
+        let result = run(async move { receiver.await.unwrap() });
         assert_eq!(result, 1);
+        reset_yield_conditions();
         evict_all();
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
+    #[test]
     fn starvation() {
         use tokio::sync::*;
         let (sender, receiver) = oneshot::channel();
@@ -886,14 +593,13 @@ mod tests {
             tokio::task::yield_now().await;
             let _ = sender.send(());
         });
-        let result = block_on(async move { receiver.await.unwrap() });
-        assert_eq!(result, ());
+        run(async move { receiver.await.unwrap() });
+        reset_yield_conditions();
         evict_all();
     }
 
     #[cfg(feature = "debug")]
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
+    #[test]
     fn task_type_info() {
         spawn(futures::future::pending::<()>());
         assert!(tasks()[0]
@@ -904,13 +610,13 @@ mod tests {
             tasks()[0].type_info().type_id().unwrap(),
             TypeId::of::<futures::future::Pending<()>>()
         );
+        reset_yield_conditions();
         evict_all();
         assert_eq!(tasks().len(), 0);
     }
 
-    #[cfg_attr(not(all(target_arch = "wasm32", target_os = "unknown")), test)]
-    #[cfg_attr(all(target_arch = "wasm32", target_os = "unknown"), wasm_bindgen_test)]
-    fn joinining() {
+    #[test]
+    fn joining() {
         use tokio::sync::*;
         let (sender, receiver) = oneshot::channel();
         let (sender1, mut receiver1) = oneshot::channel();
@@ -926,9 +632,10 @@ mod tests {
         let handle3 = spawn(async move {
             let _ = sender1.send(handle2.await);
         });
-        run(Some(handle3.task()));
+        run_until(handle3.task());
 
         assert_eq!(receiver1.try_recv().unwrap().unwrap(), 100);
+        reset_yield_conditions();
 
         evict_all();
     }
