@@ -1,7 +1,7 @@
-# Yielding Async Executor for WebAssembly
+# Yielding Executor for WebAssembly
 
-[![Crate](https://img.shields.io/crates/v/yielding-async-executor.svg)](https://crates.io/crates/yielding-async-executor)
-[![API](https://docs.rs/yielding-async-executor/badge.svg)](https://docs.rs/yielding-async-executor)
+[![Crate](https://img.shields.io/crates/v/yielding-executor.svg)](https://crates.io/crates/yielding-executor)
+[![API](https://docs.rs/yielding-executor/badge.svg)](https://docs.rs/yielding-executor)
 
 This executor is a fork of [wasm-rs-async-executor](https://github.com/wasm-rs/async-executor) decoupled from wasm-bindgen.
 
@@ -17,10 +17,10 @@ Include this dependency in your `Cargo.toml`:
 
 ```toml
 [dependencies]
-yielding-async-executor = "0.9.0"
+yielding-executor = "0.9.0"
 ```
 
-`yielding-async-executor` is expected to work on stable Rust, 1.49.0 and higher up.
+`yielding-executor` is expected to work on stable Rust, 1.49.0 and higher up.
 
 ## Supported targets
 

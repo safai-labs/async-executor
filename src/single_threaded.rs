@@ -10,7 +10,7 @@
 //!
 //! ```
 //! use tokio::sync::*;
-//! use wasm_rs_async_executor::single_threaded::{spawn, run};
+//! use yielding_executor::single_threaded::{spawn, start};
 //! let (sender, receiver) = oneshot::channel::<()>();
 //! let _task = spawn(async move {
 //!    // Complete when something is received
@@ -18,7 +18,7 @@
 //! });
 //! // Send data to be received
 //! let _ = sender.send(());
-//! run(None);
+//! start();
 //! ```
 use futures::channel::oneshot;
 use futures::task::{waker_ref, ArcWake};

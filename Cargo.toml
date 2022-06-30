@@ -1,5 +1,5 @@
 [package]
-name = "yielding-async-executor"
+name = "yielding-executor"
 version = "0.10.0"
 authors = [
   "Yurii Rashkovskii <yrashk@gmail.com>",
@@ -8,10 +8,10 @@ authors = [
 edition = "2018"
 license = "MIT OR Apache-2.0"
 description = "Async executor with configurable yielding"
-repository = "https://github.com/vinodotdev/async-executor"
-documentation = "https://docs.rs/yielding-async-executor"
+repository = "https://github.com/wasmflow/yielding-executor"
+documentation = "https://docs.rs/yielding-executor"
 readme = "README.md"
-keywords = ["wasm", "async"]
+keywords = ["wasm", "async", "yield"]
 
 [lib]
 crate-type = ["cdylib", "lib"]
@@ -21,7 +21,6 @@ futures = { version = "0.3", features = ["std"] }
 pin-project = { version = "1.0" }
 
 [target.wasm32-unknown-unknown.dependencies]
-
 
 [target.wasm32-unknown-unknown.dev-dependencies]
 
